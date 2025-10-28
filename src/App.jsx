@@ -100,7 +100,7 @@ async function fetchPOIs(lat,lon,radiusMi, types=['boat_ramp','shop_fishing']){
   if(types.includes('boat_ramp')) qParts.push('node["amenity"="boat_ramp"]');
   if(types.includes('shop_fishing')) qParts.push('node["shop"="fishing"]');
   if(qParts.length===0) return [];
-  const query = `[out:json][timeout:25];( ${qParts.map(q=>f"{q}(around:{radiusM},{lat},{lon});").join(' ')} ); out body;`;
+  const query = `[out:json][timeout:25];(${types.map(t => `node["${t}"](around:${radius}M,${lat},${lon});`).join(' ')})out body;`;
   const key = `pois:${lat.toFixed(3)},${lon.toFixed(3)}:${radiusMi}:${types.join(',')}`; const cached = cacheGet(key); if(cached) return cached;
   const r = await fetch(OVERPASS_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body: query });
   const j = await r.json();
