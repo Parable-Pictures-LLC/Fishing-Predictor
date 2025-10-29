@@ -343,40 +343,69 @@ function Speedometer({ value }) {
   const label = labelForScore(v);
   const needleAngle = (-90) + (v * 180 / 100);
   const [angle, setAngle] = useState(-90);
+
   useEffect(() => {
     const t = setTimeout(() => setAngle(needleAngle), 50);
     return () => clearTimeout(t);
   }, [needleAngle]);
 
+  // Arc geometry constants
+  const radius = 110;
+  const cx = 130, cy = 130;
+  const circumference = Math.PI * radius;
+
   return (
     <div className="w-full flex items-center justify-center">
       <svg width="260" height="150" viewBox="0 0 260 150" role="img" aria-label={`Success ${v}% ${label}`}>
-        {/* background arc */}
-        <path d="M20 130 A110 110 0 0 1 240 130" fill="none" stroke="#1F2937" strokeWidth="18" />
+        {/* Base background arc */}
+        <path
+          d={`M${cx - radius} ${cy} A${radius} ${radius} 0 0 1 ${cx + radius} ${cy}`}
+          fill="none"
+          stroke="#1F2937"
+          strokeWidth="18"
+          strokeLinecap="round"
+        />
 
-        {/* color bands following the arc */}
-        <path d="M20 130 A110 110 0 0 1 83 47" fill="none" stroke="#EF4444" strokeWidth="18" strokeLinecap="round" />
-        <path d="M83 47 A110 110 0 0 1 146 20" fill="none" stroke="#F59E0B" strokeWidth="18" strokeLinecap="round" />
-        <path d="M146 20 A110 110 0 0 1 203 47" fill="none" stroke="#10B981" strokeWidth="18" strokeLinecap="round" />
-        <path d="M203 47 A110 110 0 0 1 240 130" fill="none" stroke="#3B82F6" strokeWidth="18" strokeLinecap="round" />
+        {/* Full color arc — one path with precise dash segments */}
+        <path
+          d={`M${cx - radius} ${cy} A${radius} ${radius} 0 0 1 ${cx + radius} ${cy}`}
+          fill="none"
+          stroke="url(#gradColors)"
+          strokeWidth="18"
+          strokeLinecap="round"
+        />
+        <defs>
+          <linearGradient id="gradColors" gradientUnits="userSpaceOnUse" x1="20" y1="130" x2="240" y2="130">
+            <stop offset="0%" stopColor="#EF4444" />   {/* Red */}
+            <stop offset="40%" stopColor="#F59E0B" />  {/* Yellow */}
+            <stop offset="60%" stopColor="#10B981" />  {/* Green */}
+            <stop offset="80%" stopColor="#3B82F6" />  {/* Blue */}
+          </linearGradient>
+        </defs>
 
-        {/* ticks */}
-        {[0,25,50,75,100].map((t,i)=>{
-          const a = (-90 + (t*180/100)) * Math.PI/180;
-          const x1 = 130 + Math.cos(a)*92, y1 = 130 + Math.sin(a)*92;
-          const x2 = 130 + Math.cos(a)*110, y2 = 130 + Math.sin(a)*110;
-          return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#9CA3AF" strokeWidth="2"/>;
+        {/* Tick marks */}
+        {[0, 25, 50, 75, 100].map((t, i) => {
+          const a = (-90 + (t * 180 / 100)) * Math.PI / 180;
+          const x1 = cx + Math.cos(a) * (radius - 18);
+          const y1 = cy + Math.sin(a) * (radius - 18);
+          const x2 = cx + Math.cos(a) * (radius);
+          const y2 = cy + Math.sin(a) * (radius);
+          return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#9CA3AF" strokeWidth="2" />;
         })}
 
-        {/* needle */}
-        <g style={{ transformOrigin: "130px 130px", transform: `rotate(${angle}deg)`, transition: "transform 1.2s ease" }}>
-          <line x1="130" y1="130" x2="130" y2="30" stroke="#F3F4F6" strokeWidth="3"/>
-          <circle cx="130" cy="130" r="5" fill="#F3F4F6"/>
+        {/* Needle */}
+        <g style={{
+          transformOrigin: `${cx}px ${cy}px`,
+          transform: `rotate(${angle}deg)`,
+          transition: "transform 1.2s ease-out"
+        }}>
+          <line x1={cx} y1={cy} x2={cx} y2={cy - 100} stroke="#F3F4F6" strokeWidth="3" />
+          <circle cx={cx} cy={cy} r="5" fill="#F3F4F6" />
         </g>
 
-        {/* center text */}
-        <text x="130" y="120" textAnchor="middle" fill="#E5E7EB" fontSize="16" fontWeight="600">{v}%</text>
-        <text x="130" y="140" textAnchor="middle" fill={colorForScore(v)} fontSize="14">{label}</text>
+        {/* Center labels */}
+        <text x={cx} y="120" textAnchor="middle" fill="#E5E7EB" fontSize="16" fontWeight="600">{v}%</text>
+        <text x={cx} y="140" textAnchor="middle" fill={colorForScore(v)} fontSize="14">{label}</text>
       </svg>
     </div>
   );
