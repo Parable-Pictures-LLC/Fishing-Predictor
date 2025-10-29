@@ -341,7 +341,7 @@ function colorForScore(sc) {
 function Speedometer({ value }) {
   const v = Math.max(0, Math.min(100, value ?? 0));
   const label = labelForScore(v);
-  const needleAngle = (-90) + (v * 180 / 100); // -90 to +90 degrees
+  const needleAngle = (-90) + (v * 180 / 100);
   const [angle, setAngle] = useState(-90);
   useEffect(() => {
     const t = setTimeout(() => setAngle(needleAngle), 50);
@@ -353,11 +353,13 @@ function Speedometer({ value }) {
       <svg width="260" height="150" viewBox="0 0 260 150" role="img" aria-label={`Success ${v}% ${label}`}>
         {/* background arc */}
         <path d="M20 130 A110 110 0 0 1 240 130" fill="none" stroke="#1F2937" strokeWidth="18" />
-        {/* colored bands */}
-        <path d="M20 130 A110 110 0 0 1 83 130" fill="none" stroke="#EF4444" strokeWidth="18" />
-        <path d="M83 130 A110 110 0 0 1 146 130" fill="none" stroke="#F59E0B" strokeWidth="18" />
-        <path d="M146 130 A110 110 0 0 1 203 130" fill="none" stroke="#10B981" strokeWidth="18" />
-        <path d="M203 130 A110 110 0 0 1 240 130" fill="none" stroke="#3B82F6" strokeWidth="18" />
+
+        {/* color bands following the arc */}
+        <path d="M20 130 A110 110 0 0 1 83 47" fill="none" stroke="#EF4444" strokeWidth="18" strokeLinecap="round" />
+        <path d="M83 47 A110 110 0 0 1 146 20" fill="none" stroke="#F59E0B" strokeWidth="18" strokeLinecap="round" />
+        <path d="M146 20 A110 110 0 0 1 203 47" fill="none" stroke="#10B981" strokeWidth="18" strokeLinecap="round" />
+        <path d="M203 47 A110 110 0 0 1 240 130" fill="none" stroke="#3B82F6" strokeWidth="18" strokeLinecap="round" />
+
         {/* ticks */}
         {[0,25,50,75,100].map((t,i)=>{
           const a = (-90 + (t*180/100)) * Math.PI/180;
@@ -365,11 +367,13 @@ function Speedometer({ value }) {
           const x2 = 130 + Math.cos(a)*110, y2 = 130 + Math.sin(a)*110;
           return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#9CA3AF" strokeWidth="2"/>;
         })}
+
         {/* needle */}
         <g style={{ transformOrigin: "130px 130px", transform: `rotate(${angle}deg)`, transition: "transform 1.2s ease" }}>
           <line x1="130" y1="130" x2="130" y2="30" stroke="#F3F4F6" strokeWidth="3"/>
           <circle cx="130" cy="130" r="5" fill="#F3F4F6"/>
         </g>
+
         {/* center text */}
         <text x="130" y="120" textAnchor="middle" fill="#E5E7EB" fontSize="16" fontWeight="600">{v}%</text>
         <text x="130" y="140" textAnchor="middle" fill={colorForScore(v)} fontSize="14">{label}</text>
@@ -377,6 +381,7 @@ function Speedometer({ value }) {
     </div>
   );
 }
+
 
 // ============================== App ==============================
 export default function App() {
