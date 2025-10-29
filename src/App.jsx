@@ -741,7 +741,7 @@ export default function App() {
 
       {/* Species suggestions */}
       <section className="bg-slate-900 p-4 rounded-xl">
-        <h2 className="font-semibold mb-2">Species you might try today</h2>
+        <h2 className="font-semibold mb-2">Species you might try today (If available in your area)</h2>
         {speciesSuggestions.length === 0 ? (
           <p className="text-sm text-slate-400">No standouts right now. Try adjusting time, radius, or target water.</p>
         ) : (
