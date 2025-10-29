@@ -562,7 +562,7 @@ export default function App() {
   return (
     <div className="max-w-6xl mx-auto p-4 space-y-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-3xl font-bold">Fishing Predictor</h1>
+        <h1 className="text-3xl font-bold">Freshwater Fishing Predictor</h1>
         <p className="text-slate-300 text-sm">
           Brought to you by Mike Jones and Jim Weaver. May your lure always find a fish! Copyright 2025.
         </p>
