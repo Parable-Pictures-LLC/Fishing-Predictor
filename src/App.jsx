@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import L from "leaflet";
 import {
   ALL_GAME_FISH,
-  top20ForType,
+  top20ForType,          // we’ll filter this further with temp logic
   successScore,
   suggestGear,
   bboxFromCenterRadius,
@@ -15,12 +15,13 @@ import {
 const USGS_SITE_URL = "https://waterservices.usgs.gov/nwis/site/";
 const USGS_IV_URL = "https://waterservices.usgs.gov/nwis/iv/";
 const OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast";
-// Overpass mirrors to improve reliability on GitHub Pages
 const OVERPASS_MIRRORS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.openstreetmap.fr/api/interpreter",
 ];
+const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
 
+// --------- Geolocation hook ----------
 function useGeolocation() {
   const [pos, setPos] = useState(null);
   const [err, setErr] = useState(null);
@@ -38,6 +39,7 @@ function useGeolocation() {
   return { pos, err, get };
 }
 
+// --------- Leaflet Map (click to set center) ----------
 function Map({ center, wb, radiusMi, onMapClick }) {
   useEffect(() => {
     const map = L.map("map", { attributionControl: true }).setView(
@@ -64,7 +66,6 @@ function Map({ center, wb, radiusMi, onMapClick }) {
       });
     }
 
-    // Allow user to click to set a new center
     const handleClick = (e) => {
       onMapClick && onMapClick({ lat: e.latlng.lat, lon: e.latlng.lng });
     };
@@ -86,6 +87,7 @@ function Map({ center, wb, radiusMi, onMapClick }) {
   );
 }
 
+// --------- Helpers: Overpass, USGS, Weather, POIs ----------
 async function fetchOverpass(query) {
   let lastErr = null;
   for (const base of OVERPASS_MIRRORS) {
@@ -107,7 +109,6 @@ async function fetchOverpass(query) {
   throw lastErr || new Error("All Overpass mirrors failed");
 }
 
-// Fetch USGS monitoring sites; fallback to OSM if none found or error
 async function fetchUSGSSites(center, radiusMi) {
   const bbox = bboxFromCenterRadius(center.lat, center.lon, radiusMi);
   const params = new URLSearchParams({
@@ -145,7 +146,6 @@ async function fetchUSGSSites(center, radiusMi) {
     console.info("[USGS] Sites returned:", list.length);
 
     if (list.length === 0) {
-      // Fallback to OSM water features
       const radiusM = Math.floor(radiusMi * 1609.344);
       const { lat, lon } = center;
       const query = `[out:json][timeout:25];
@@ -313,23 +313,99 @@ async function fetchPOIs(lat, lon, radiusMi, types = ["boat_ramp", "shop_fishing
   }
 }
 
+// --------- New: Geocoding (City/State / Landmark) ----------
+async function geocodePlace(q) {
+  const params = new URLSearchParams({
+    q,
+    format: "json",
+    limit: "1",
+    addressdetails: "0",
+  });
+  const url = `${NOMINATIM_URL}?${params.toString()}`;
+  console.info("[Geo] Geocoding:", q);
+  const r = await fetch(url, {
+    headers: { "Accept-Language": "en" }, // keep results consistent
+  });
+  if (!r.ok) throw new Error(`Geocoding HTTP ${r.status}`);
+  const arr = await r.json();
+  if (!arr || arr.length === 0) return null;
+  const { lat, lon } = arr[0];
+  return { lat: parseFloat(lat), lon: parseFloat(lon) };
+}
+
+// --------- New: Warm/Cold filtering helpers ----------
+function getWaterTempForLogic(derived, hydro) {
+  // Prefer measured water temp; else estimated from air
+  return (hydro?.waterTempF ?? derived?.waterTempF ?? null);
+}
+
+// Rule-of-thumb thresholds: colder for rivers (moving water), slightly warmer for lakes
+function isColdWater(waterType, waterTempF) {
+  if (!Number.isFinite(waterTempF)) return null; // unknown
+  if (/River|Stream/i.test(waterType)) return waterTempF < 60;
+  return waterTempF < 55; // Lake/Reservoir/Water
+}
+
+// Curated species sets (subset from ALL_GAME_FISH) for better realism
+const WARM_SET = [
+  "Largemouth Bass","Smallmouth Bass","Striped Bass","White Bass","Walleye",
+  "Crappie","Bluegill","Sunfish","Perch","Catfish","Carp","Hybrid Striper","Northern Pike","Muskellunge"
+];
+
+const COLD_SET = [
+  "Rainbow Trout","Brown Trout","Brook Trout","Lake Trout","Steelhead",
+  "Walleye","Perch","Northern Pike","Muskellunge","Smallmouth Bass"
+];
+
+// Filter base list by temperature profile
+function top20ForTypeAndTemp(waterType, waterTempF) {
+  const base = top20ForType(waterType || "Water");
+  const cold = isColdWater(waterType || "Water", waterTempF);
+  if (cold === null) {
+    // Unknown temp → keep base but cap at 20
+    return base.slice(0, 20);
+  }
+  const allow = cold ? COLD_SET : WARM_SET;
+  // Keep species that are in both base and allowed set, then fill with base remainder
+  const primary = base.filter(s => allow.includes(s));
+  const remainder = base.filter(s => !primary.includes(s));
+  return [...primary, ...remainder].slice(0, 20);
+}
+
+// Normalize species name for recognition
+function normName(s) {
+  return (s || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+const KNOWN_SET = new Set(ALL_GAME_FISH.map(normName));
+
+// ======================= App =======================
 export default function App() {
   const { pos, get } = useGeolocation();
-  const [centerText, setCenterText] = useState("");
+
+  // Location & geocoding
   const [center, setCenter] = useState(null);
+  const [searchText, setSearchText] = useState(""); // city/state/landmark
+  const [geoError, setGeoError] = useState("");
+
+  // Controls & data
   const [radius, setRadius] = useState(25);
   const [dateIso, setDateIso] = useState(() => new Date().toISOString());
   const [sites, setSites] = useState([]);
   const [selectedSiteId, setSelectedSiteId] = useState("center"); // default to Current Location
   const [siteInfo, setSiteInfo] = useState(null);
-  const [species, setSpecies] = useState("Largemouth Bass");
+
+  const [species, setSpecies] = useState("Largemouth Bass"); // dropdown choice
+  const [customSpecies, setCustomSpecies] = useState("");     // typed override
+  const [unknownCustom, setUnknownCustom] = useState(false);
+
   const [wx, setWx] = useState(null);
   const [hydro, setHydro] = useState(null);
   const [pois, setPois] = useState([]);
   const [showBait, setShowBait] = useState(true);
   const [showRamps, setShowRamps] = useState(true);
 
-  // Always treat "center" as a synthetic site
+  // Synthetic "Current Location" site
   const syntheticFromCenter = useMemo(() => {
     if (!center) return null;
     return {
@@ -342,19 +418,18 @@ export default function App() {
     };
   }, [center]);
 
-  // Initialize to geolocation if available
+  // Init from browser geolocation (if allowed)
   useEffect(() => {
     if (pos && !center) {
       setCenter(pos);
-      setCenterText(`${pos.lat.toFixed(5)},${pos.lon.toFixed(5)}`);
     }
   }, [pos, center]);
 
-  // When center/radius/toggles change, fetch nearby sites + POIs
+  // Refetch nearby sites + POIs when center/radius/toggles change
   useEffect(() => {
     if (!center) return;
     (async () => {
-      // Set synthetic site immediately so UI shows data for current location by default
+      // Default selected site = Current Location
       setSiteInfo({
         id: "center",
         name: "Current Location",
@@ -364,11 +439,9 @@ export default function App() {
         source: "CENTER",
       });
 
-      // Fetch bodies of water
       const s = await fetchUSGSSites(center, radius);
       setSites(s);
 
-      // Fetch access points near the center (not the selected waterbody)
       const p = await fetchPOIs(
         center.lat,
         center.lon,
@@ -390,7 +463,7 @@ export default function App() {
     if (s) setSiteInfo(s);
   }, [selectedSiteId, sites, syntheticFromCenter, center]);
 
-  // Fetch weather + hydrology as the selected site/date changes
+  // Weather + hydrology on site/date change
   useEffect(() => {
     if (!siteInfo || !dateIso) return;
     (async () => {
@@ -405,6 +478,7 @@ export default function App() {
     })();
   }, [siteInfo?.id, siteInfo?.lat, siteInfo?.lon, siteInfo?.source, dateIso]);
 
+  // Derived conditions
   const hourNow = new Date().getHours();
   const measured = {
     waterTempF: hydro?.waterTempF ?? null,
@@ -414,8 +488,7 @@ export default function App() {
   const derived = useMemo(() => {
     if (!wx) return null;
     const avgAir =
-      wx.hourly.reduce((a, b) => a + (b.airTempF || 0), 0) /
-      Math.max(wx.hourly.length, 1);
+      wx.hourly.reduce((a, b) => a + (b.airTempF || 0), 0) / Math.max(wx.hourly.length, 1);
     const estWater = measured.waterTempF ?? Math.round(avgAir - 5);
     const windNow = wx.hourly[hourNow]?.windMph ?? 5;
     const cloudNow = wx.hourly[hourNow]?.cloudPct ?? 50;
@@ -433,14 +506,33 @@ export default function App() {
     };
   }, [wx, measured.waterTempF, measured.turbidityFnu, hourNow]);
 
+  // Compute temperature profile for species filtering
+  const logicWaterTempF = getWaterTempForLogic(derived, hydro);
+  const filteredSpeciesList = useMemo(() => {
+    return top20ForTypeAndTemp(siteInfo?.type || "Water", logicWaterTempF);
+  }, [siteInfo?.type, logicWaterTempF]);
+
+  // Effective species (typed overrides dropdown)
+  const effectiveSpecies = useMemo(() => {
+    const typed = customSpecies.trim();
+    if (typed.length === 0) {
+      setUnknownCustom(false);
+      return species;
+    }
+    const known = KNOWN_SET.has(normName(typed));
+    setUnknownCustom(!known);
+    console.info("[Species] Using custom:", typed, "known?", known);
+    return typed;
+  }, [customSpecies, species]);
+
   const selectedWaterType = siteInfo?.type || "Water";
   const score = useMemo(
-    () => (derived && siteInfo ? successScore(species, selectedWaterType, derived) : null),
-    [derived, species, selectedWaterType, siteInfo]
+    () => (derived && siteInfo ? successScore(effectiveSpecies, selectedWaterType, derived) : null),
+    [derived, effectiveSpecies, selectedWaterType, siteInfo]
   );
   const gear = useMemo(
-    () => (derived && siteInfo ? suggestGear(species, selectedWaterType, derived) : null),
-    [derived, species, selectedWaterType, siteInfo]
+    () => (derived && siteInfo ? suggestGear(effectiveSpecies, selectedWaterType, derived) : null),
+    [derived, effectiveSpecies, selectedWaterType, siteInfo]
   );
 
   const bestTimes = useMemo(() => {
@@ -452,27 +544,34 @@ export default function App() {
     });
   }, [wx]);
 
-  function parseCenter() {
-    const m = centerText
-      .trim()
-      .match(/^\s*(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)\s*$/);
-    if (!m) {
-      alert("Enter coordinates like '40.558,-85.659' or use Current Location.");
-      return;
-    }
-    setCenter({ lat: parseFloat(m[1]), lon: parseFloat(m[2]) });
-    setSelectedSiteId("center");
-  }
-
-  const mapsLinks = useMemo(() => {
-    if (!siteInfo) return null;
-    const { lat, lon } = siteInfo;
-    const q = `${lat},${lon}`;
+  function mapsLinksFor(site) {
+    if (!site) return null;
+    const q = `${site.lat},${site.lon}`;
     return {
       google: `https://www.google.com/maps/search/?api=1&query=${q}`,
       apple: `maps://?q=${q}`,
     };
-  }, [siteInfo]);
+  }
+  const mapsLinks = mapsLinksFor(siteInfo);
+
+  async function handleFindPlace() {
+    setGeoError("");
+    const q = searchText.trim();
+    if (!q) return;
+    try {
+      const ll = await geocodePlace(q);
+      if (!ll) {
+        setGeoError("Couldn’t find that location. Try city and state (e.g., Boise, Idaho).");
+        return;
+      }
+      console.info("[Geo] Found:", ll);
+      setCenter(ll);
+      setSelectedSiteId("center");
+    } catch (e) {
+      console.error("[Geo] Error:", e);
+      setGeoError("Search failed. Please try again in a moment.");
+    }
+  }
 
   return (
     <div className="max-w-6xl mx-auto p-4 space-y-6">
@@ -484,22 +583,15 @@ export default function App() {
       </header>
 
       <section className="grid md:grid-cols-3 gap-4">
+        {/* Location */}
         <div className="bg-slate-900 p-4 rounded-xl space-y-3">
           <h2 className="font-semibold">Location</h2>
+
           <div className="flex gap-2">
-            <input
-              className="flex-1 bg-slate-800 rounded px-3 py-2 outline-none"
-              placeholder="lat,lon e.g. 40.558,-85.659"
-              value={centerText}
-              onChange={(e) => setCenterText(e.target.value)}
-              aria-label="Coordinates input"
-            />
-            <button className="bg-blue-500 hover:bg-blue-600 px-3 py-2 rounded" onClick={parseCenter}>
-              Set
-            </button>
-          </div>
-          <div className="flex gap-2">
-            <button className="bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded" onClick={() => { get(); }}>
+            <button
+              className="bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded"
+              onClick={() => { get(); }}
+            >
               Use Current Location
             </button>
             {center && (
@@ -508,6 +600,20 @@ export default function App() {
               </span>
             )}
           </div>
+
+          <div className="flex gap-2">
+            <input
+              className="flex-1 bg-slate-800 rounded px-3 py-2 outline-none"
+              placeholder="City / State or Landmark (e.g., Marion, Indiana)"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              aria-label="City or state or landmark"
+            />
+            <button className="bg-blue-500 hover:bg-blue-600 px-3 py-2 rounded" onClick={handleFindPlace}>
+              Find
+            </button>
+          </div>
+          {geoError && <div className="text-xs text-yellow-300">{geoError}</div>}
 
           <label className="block text-sm mt-2">Travel radius: {radius} mi</label>
           <input
@@ -544,11 +650,10 @@ export default function App() {
           </select>
         </div>
 
+        {/* Water Body */}
         <div className="bg-slate-900 p-4 rounded-xl space-y-3">
           <h2 className="font-semibold">Water Body</h2>
-          <p className="text-xs text-slate-400">
-            Tip: Click anywhere on the map to set your location manually.
-          </p>
+          <p className="text-xs text-slate-400">Tip: Click anywhere on the map to set your location manually.</p>
 
           <select
             className="w-full bg-slate-800 rounded px-3 py-2"
@@ -556,17 +661,12 @@ export default function App() {
             onChange={(e) => setSelectedSiteId(e.target.value)}
             aria-label="Water body selector"
           >
-            {/* First line: Current Location (always present) */}
             <option value="center">Current Location</option>
-
-            {/* Second line message only if no bodies of water are available */}
             {sites.length === 0 && (
               <option value="__nodata" disabled>
                 No nearby water bodies found.
               </option>
             )}
-
-            {/* Otherwise, list water bodies */}
             {sites.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name} · {s.type} · {center ? haversineMiles(center, { lat: s.lat, lon: s.lon }).toFixed(1) : "?"} mi {s.source === "OSM" ? "(OSM)" : ""}
@@ -576,22 +676,12 @@ export default function App() {
 
           {siteInfo && (
             <div className="text-xs text-slate-300 space-y-1">
-              <div>
-                <strong>Name:</strong> {siteInfo.name}
-              </div>
-              <div>
-                <strong>Type:</strong> {siteInfo.type}
-              </div>
-              <div>
-                <strong>Coords:</strong> {siteInfo.lat.toFixed(4)}, {siteInfo.lon.toFixed(4)}
-              </div>
+              <div><strong>Name:</strong> {siteInfo.name}</div>
+              <div><strong>Type:</strong> {siteInfo.type}</div>
+              <div><strong>Coords:</strong> {siteInfo.lat.toFixed(4)}, {siteInfo.lon.toFixed(4)}</div>
               <div className="flex gap-3 mt-2">
-                <a className="underline" href={mapsLinks?.google} target="_blank" rel="noreferrer">
-                  Open in Google Maps
-                </a>
-                <a className="underline" href={mapsLinks?.apple}>
-                  Open in Apple Maps
-                </a>
+                <a className="underline" href={mapsLinks?.google} target="_blank" rel="noreferrer">Open in Google Maps</a>
+                <a className="underline" href={mapsLinks?.apple}>Open in Apple Maps</a>
               </div>
             </div>
           )}
@@ -604,42 +694,49 @@ export default function App() {
                 radiusMi={radius}
                 onMapClick={(pt) => {
                   setCenter(pt);
-                  setCenterText(`${pt.lat.toFixed(5)},${pt.lon.toFixed(5)}`);
-                  setSelectedSiteId("center"); // keep Current Location selected on manual move
+                  setSelectedSiteId("center");
                 }}
               />
             )}
           </div>
         </div>
 
+        {/* Species & Predictions */}
         <div className="bg-slate-900 p-4 rounded-xl space-y-3">
           <h2 className="font-semibold">Target Species</h2>
+
           <select
             className="w-full bg-slate-800 rounded px-3 py-2"
             value={species}
             onChange={(e) => setSpecies(e.target.value)}
             aria-label="Species selector"
           >
-            {(siteInfo ? top20ForType(siteInfo.type) : ALL_GAME_FISH).map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
+            {filteredSpeciesList.map((s) => (
+              <option key={s} value={s}>{s}</option>
             ))}
           </select>
+
+          <input
+            className="mt-2 w-full bg-slate-800 rounded px-3 py-2 outline-none"
+            placeholder="Or type a specific fish species"
+            value={customSpecies}
+            onChange={(e) => setCustomSpecies(e.target.value)}
+            aria-label="Type a specific fish species"
+          />
+          <div className="text-xs text-slate-400">
+            Species list estimated for {isColdWater(selectedWaterType, logicWaterTempF) ? "cold" : "warm"}-water conditions based on temperature.
+          </div>
+          {unknownCustom && (
+            <div className="text-xs text-yellow-300 mt-1">Unknown species — using general freshwater model.</div>
+          )}
 
           {wx && siteInfo && (
             <div className="mt-3 bg-slate-800 rounded p-3">
               <div className="flex flex-wrap gap-3 text-sm">
                 <span>
                   Water{" "}
-                  {(
-                    hydro?.waterTempF
-                      ? Math.round(hydro.waterTempF)
-                      : Math.round(derived?.waterTempF ?? 0)
-                  )}°F{" "}
-                  {derived?.estimated && !hydro?.waterTempF ? (
-                    <em className="text-yellow-300">(estimated)</em>
-                  ) : null}
+                  {(hydro?.waterTempF ? Math.round(hydro.waterTempF) : Math.round(derived?.waterTempF ?? 0))}°F{" "}
+                  {derived?.estimated && !hydro?.waterTempF ? <em className="text-yellow-300">(estimated)</em> : null}
                 </span>
                 <span>Wind {derived?.windMph ?? "…"} mph</span>
                 <span>Pressure {derived?.barometerInHg ?? "…"} inHg</span>
@@ -657,23 +754,17 @@ export default function App() {
               </div>
               {gear && (
                 <div className="mt-3 space-y-2 text-sm">
-                  <div>
-                    <strong>Rod:</strong> {gear.rodAndLine}
-                  </div>
+                  <div><strong>Rod:</strong> {gear.rodAndLine}</div>
                   <div>
                     <strong>Lures/Baits:</strong>
                     <ul className="list-disc pl-5">
-                      {gear.lures.map((l, i) => (
-                        <li key={i}>{l}</li>
-                      ))}
+                      {gear.lures.map((l, i) => <li key={i}>{l}</li>)}
                     </ul>
                   </div>
                   <div>
                     <strong>Locations:</strong>
                     <ul className="list-disc pl-5">
-                      {gear.locations.map((l, i) => (
-                        <li key={i}>{l}</li>
-                      ))}
+                      {gear.locations.map((l, i) => <li key={i}>{l}</li>)}
                     </ul>
                   </div>
                 </div>
